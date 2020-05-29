@@ -1,0 +1,213 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Outputs:
+  LoadBalancerARN:
+    Description: ALB ARN
+    Value: !GetAtt ALBARNoutInvocation.albarn
+  WebApplicationFirewallARN:
+    Description: WebApplicationFirewall ARN
+    Value: !GetAtt WebApplicationFirewall.Arn
+Resources:
+  sampleApplication:
+    Type: AWS::ElasticBeanstalk::Application
+    Properties:
+      Description: AWS Elastic Beanstalk Sample Application
+  sampleApplicationVersion:
+    Type: AWS::ElasticBeanstalk::ApplicationVersion
+    Properties:
+      ApplicationName:
+        Ref: sampleApplication
+      Description: AWS ElasticBeanstalk Sample Application Version
+      SourceBundle:
+        S3Bucket: !Sub "elasticbeanstalk-samples-${AWS::Region}"
+        S3Key: php-newsample-app.zip
+  sampleConfigurationTemplate:
+    Type: AWS::ElasticBeanstalk::ConfigurationTemplate
+    Properties:
+      ApplicationName:
+        Ref: sampleApplication
+      Description: AWS ElasticBeanstalk Sample Configuration Template
+      OptionSettings:
+      - Namespace: aws:autoscaling:asg
+        OptionName: MinSize
+        Value: '2'
+      - Namespace: aws:autoscaling:asg
+        OptionName: MaxSize
+        Value: '6'
+      - Namespace: aws:elasticbeanstalk:environment
+        OptionName: EnvironmentType
+        Value: LoadBalanced
+      - Namespace: aws:elasticbeanstalk:environment
+        OptionName: LoadBalancerType
+        Value: application
+      SolutionStackName: 64bit Amazon Linux 2018.03 v2.9.6 running PHP 7.3
+  sampleEnvironment:
+    Type: AWS::ElasticBeanstalk::Environment
+    Properties:
+      ApplicationName:
+        Ref: sampleApplication
+      Description: AWS ElasticBeanstalk Sample Environment
+      TemplateName:
+        Ref: sampleConfigurationTemplate
+      VersionLabel:
+        Ref: sampleApplicationVersion
+  WebApplicationFirewall:
+    Type: AWS::WAFv2::WebACL
+    DependsOn: sampleEnvironment
+    Properties: 
+      DefaultAction: 
+        Allow : {}
+      Description: WAFv2 WebACL for Manage
+      Name: WebACL-Manage
+      Scope: REGIONAL
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: WebACL-Manage
+      Rules:
+      - Name: AWS-AWSManagedRulesAmazonIpReputationList
+        Priority: 0
+        Statement:
+          ManagedRuleGroupStatement:
+            VendorName: AWS
+            Name: AWSManagedRulesAmazonIpReputationList
+        OverrideAction:
+          None: {}
+        VisibilityConfig:
+          SampledRequestsEnabled: true
+          CloudWatchMetricsEnabled: true
+          MetricName: AWS-AWSManagedRulesAmazonIpReputationList
+      - Name: AWS-AWSManagedRulesCommonRuleSet
+        Priority: 1
+        Statement:
+          ManagedRuleGroupStatement:
+            VendorName: AWS
+            Name: AWSManagedRulesCommonRuleSet
+        OverrideAction:
+          None: {}
+        VisibilityConfig:
+          SampledRequestsEnabled: true
+          CloudWatchMetricsEnabled: true
+          MetricName: AWS-AWSManagedRulesCommonRuleSet
+      - Name: AWS-AWSManagedRulesKnownBadInputsRuleSet
+        Priority: 2
+        Statement:
+          ManagedRuleGroupStatement:
+            VendorName: AWS
+            Name: AWSManagedRulesKnownBadInputsRuleSet
+        OverrideAction:
+          None: {}
+        VisibilityConfig:
+          SampledRequestsEnabled: true
+          CloudWatchMetricsEnabled: true
+          MetricName: AWS-AWSManagedRulesKnownBadInputsRuleSet
+      - Name: AWS-AWSManagedRulesSQLiRuleSet
+        Priority: 3
+        Statement:
+          ManagedRuleGroupStatement:
+            VendorName: AWS
+            Name: AWSManagedRulesSQLiRuleSet
+        OverrideAction:
+          None: {}
+        VisibilityConfig:
+          SampledRequestsEnabled: true
+          CloudWatchMetricsEnabled: true
+          MetricName: AWS-AWSManagedRulesSQLiRuleSet
+      - Name: AWS-AWSManagedRulesLinuxRuleSet
+        Priority: 4
+        Statement:
+          ManagedRuleGroupStatement:
+            VendorName: AWS
+            Name: AWSManagedRulesLinuxRuleSet
+        OverrideAction:
+          None: {}
+        VisibilityConfig:
+          SampledRequestsEnabled: true
+          CloudWatchMetricsEnabled: true
+          MetricName: AWS-AWSManagedRulesLinuxRuleSet
+      - Name: AWS-AWSManagedRulesPHPRuleSet
+        Priority: 5
+        Statement:
+          ManagedRuleGroupStatement:
+            VendorName: AWS
+            Name: AWSManagedRulesPHPRuleSet
+        OverrideAction:
+          None: {}
+        VisibilityConfig:
+          SampledRequestsEnabled: true
+          CloudWatchMetricsEnabled: true
+          MetricName: AWS-AWSManagedRulesPHPRuleSet
+  IamRoleLambdaForELB:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: arn:aws:logs:*:*:*
+          - Effect: Allow
+            Action:
+            - elasticloadbalancing:*
+            Resource: "*"
+  AlbLambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    DeletionPolicy: Delete
+    DependsOn:
+      - IamRoleLambdaForELB
+    Properties:
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          import cfnresponse # this needs to be imported for replying to CloudFormation
+          client = boto3.client('elbv2')
+          elbarn = 'xxx'
+          def handler(event, context):
+              client = boto3.client('elbv2')
+              x = os.environ.get("elbendpoint").split('.')
+              y = x[0].split('-')
+              elbname = y[0] + '-' + y[1] + '-' + y[2]
+              response = client.describe_load_balancers(Names=[elbname,])
+              for elb in response['LoadBalancers']:
+                  print('ELB Name:' + elb['LoadBalancerArn'])
+                  elbarn = elb['LoadBalancerArn']
+              responseData = {} # added
+              responseData['albarn'] = elbarn # added
+              cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData) # return modified
+      Handler: index.handler
+      Runtime: python3.6
+      MemorySize: 128
+      Role: !GetAtt IamRoleLambdaForELB.Arn
+      Timeout: 30
+      Environment:
+        Variables:
+          elbendpoint: !GetAtt sampleEnvironment.EndpointURL
+  ALBARNoutInvocation:
+    Type: Custom::ALBARNOut
+    Properties:
+      ServiceToken: !GetAtt AlbLambdaFunction.Arn
+      Region: !Ref "AWS::Region"
+  WebAclElbAssociation:
+    DependsOn: 
+      - WebApplicationFirewall
+    Type: "AWS::WAFv2::WebACLAssociation"
+    Properties: 
+      ResourceArn: !GetAtt ALBARNoutInvocation.albarn
+      WebACLArn: !GetAtt WebApplicationFirewall.Arn
+        
